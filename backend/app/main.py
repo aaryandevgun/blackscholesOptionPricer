@@ -1,11 +1,11 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import numpy as np
 from scipy.stats import norm
 import asyncio
 import json
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Literal
 import random
 import time
 
@@ -22,12 +22,14 @@ app.add_middleware(
 
 # Pydantic models for request/response validation
 class OptionParams(BaseModel):
-    spot_price: float
-    strike_price: float
-    time_to_maturity: float  # in years
-    risk_free_rate: float
-    volatility: float
-    option_type: str  # "call" or "put"
+    # S, K, T and sigma must be strictly positive: log(S/K) and the
+    # 1/(sigma*sqrt(T)) term in d1 are undefined otherwise.
+    spot_price: float = Field(gt=0)
+    strike_price: float = Field(gt=0)
+    time_to_maturity: float = Field(gt=0)  # in years
+    risk_free_rate: float  # continuously compounded, annual (0.05 = 5%)
+    volatility: float = Field(gt=0)  # annualized (0.2 = 20%)
+    option_type: Literal["call", "put"]
     call_purchase_price: Optional[float] = None
     put_purchase_price: Optional[float] = None
 
@@ -50,30 +52,44 @@ class HeatMapData(BaseModel):
     put_pnl: List[List[float]]
 
 # Black-Scholes implementation
+#
+# Greek units (standard analytic form, no rescaling):
+#   theta: change in price per YEAR of calendar time (divide by 365 for per-day)
+#   vega:  change in price per 1.00 change in volatility (divide by 100 for per vol point)
+#   rho:   change in price per 1.00 change in rate (divide by 100 for per 1%)
 def black_scholes(params: OptionParams) -> OptionPrice:
     S = params.spot_price
     K = params.strike_price
     T = params.time_to_maturity
     r = params.risk_free_rate
     sigma = params.volatility
-    option_type = params.option_type.lower()
+    option_type = params.option_type
 
-    d1 = (np.log(S/K) + (r + 0.5 * sigma**2) * T) / (sigma * np.sqrt(T))
-    d2 = d1 - sigma * np.sqrt(T)
+    sqrt_T = np.sqrt(T)
+    d1 = (np.log(S / K) + (r + 0.5 * sigma**2) * T) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    discount = np.exp(-r * T)
+
+    # Time-decay term from volatility; identical for calls and puts
+    theta_vol = -S * norm.pdf(d1) * sigma / (2 * sqrt_T)
 
     if option_type == "call":
-        price = S * norm.cdf(d1) - K * np.exp(-r * T) * norm.cdf(d2)
+        price = S * norm.cdf(d1) - K * discount * norm.cdf(d2)
         delta = norm.cdf(d1)
+        theta = theta_vol - r * K * discount * norm.cdf(d2)
+        rho = K * T * discount * norm.cdf(d2)
     else:  # put
-        price = K * np.exp(-r * T) * norm.cdf(-d2) - S * norm.cdf(-d1)
+        price = K * discount * norm.cdf(-d2) - S * norm.cdf(-d1)
         delta = norm.cdf(d1) - 1
+        # The rate term has the opposite sign for puts: the discounted
+        # strike is money you RECEIVE, so carrying it to expiry helps you.
+        theta = theta_vol + r * K * discount * norm.cdf(-d2)
+        # Puts lose value when rates rise (PV of the strike you receive falls)
+        rho = -K * T * discount * norm.cdf(-d2)
 
-    # Calculate Greeks
-    gamma = norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    theta = (-S * norm.pdf(d1) * sigma / (2 * np.sqrt(T)) - 
-             r * K * np.exp(-r * T) * norm.cdf(d2 if option_type == "call" else -d2))
-    vega = S * np.sqrt(T) * norm.pdf(d1)
-    rho = K * T * np.exp(-r * T) * norm.cdf(d2 if option_type == "call" else -d2)
+    # Gamma and vega are the same for calls and puts
+    gamma = norm.pdf(d1) / (S * sigma * sqrt_T)
+    vega = S * sqrt_T * norm.pdf(d1)
 
     # Calculate P&L if purchase prices are provided
     call_pnl = None

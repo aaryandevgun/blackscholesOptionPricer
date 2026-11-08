@@ -15,16 +15,22 @@ const Title = styled.h3`
   color: #2c3e50;
 `;
 
-const HeatMap = ({ data, title }) => {
-  if (!data) return null;
+// `values` is the 2D grid to plot (rows = volatilities, cols = spot prices),
+// e.g. data.call_pnl or data.put_pnl.
+const HeatMap = ({ data, values, title }) => {
+  if (!data || !values) return null;
 
   const xLabels = data.spot_prices.map(price => price.toFixed(2));
   const yLabels = data.volatilities.map(vol => vol.toFixed(2));
 
+  // Scale color intensity to the largest |P&L| in this grid so the map
+  // uses its full range whatever the option's price level.
+  const maxAbs = Math.max(...values.flat().map(Math.abs)) || 1;
+
   const getColor = (value) => {
     if (value === 0) return '#ffffff';
-    const intensity = Math.min(Math.abs(value) * 2, 1);
-    return value > 0 
+    const intensity = Math.min(Math.abs(value) / maxAbs, 1);
+    return value > 0
       ? `rgba(0, 255, 0, ${intensity})`
       : `rgba(255, 0, 0, ${intensity})`;
   };
@@ -33,11 +39,13 @@ const HeatMap = ({ data, title }) => {
     <HeatMapContainer>
       <Title>{title}</Title>
       <HeatMapGrid
-        data={data.call_pnl}
+        data={values}
         xLabels={xLabels}
         yLabels={yLabels}
-        cellStyle={(_x, _y, ratio) => ({
-          background: getColor(ratio),
+        // Color by the actual P&L value, not the library's min-max `ratio`
+        // (ratio is always in [0, 1], so losses would never show as red).
+        cellStyle={(row, col) => ({
+          background: getColor(values[row][col]),
           fontSize: '11px',
           color: '#000',
           width: '30px',

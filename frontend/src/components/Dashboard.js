@@ -162,12 +162,20 @@ const Dashboard = () => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
+      // Blank purchase-price fields are '' in state; the API expects null
+      // (an empty string fails float validation and returns 422).
+      const payload = {
+        ...formData,
+        call_purchase_price: formData.call_purchase_price === '' ? null : formData.call_purchase_price,
+        put_purchase_price: formData.put_purchase_price === '' ? null : formData.put_purchase_price,
+      };
+
       // Calculate option price
-      const response = await axios.post('http://localhost:8000/pricing', formData);
+      const response = await axios.post('http://localhost:8000/pricing', payload);
       setPriceData(response.data);
 
       // Get heat map data
-      const heatMapResponse = await axios.post('http://localhost:8000/heatmap', formData);
+      const heatMapResponse = await axios.post('http://localhost:8000/heatmap', payload);
       setHeatMapData(heatMapResponse.data);
     } catch (error) {
       console.error('Error:', error);
@@ -301,8 +309,8 @@ const Dashboard = () => {
         <Line data={chartData} options={chartOptions} />
         {heatMapData && (
           <>
-            <HeatMap data={heatMapData} title="Call Option P&L Heat Map" />
-            <HeatMap data={heatMapData} title="Put Option P&L Heat Map" />
+            <HeatMap data={heatMapData} values={heatMapData.call_pnl} title="Call Option P&L Heat Map" />
+            <HeatMap data={heatMapData} values={heatMapData.put_pnl} title="Put Option P&L Heat Map" />
           </>
         )}
       </ChartContainer>
